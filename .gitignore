@@ -218,4 +218,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-raw_data/
+raw_data/**/*.wav
+win/tn-ct2

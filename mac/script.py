@@ -35,7 +35,7 @@ class Transcribe:
     def __init__(self, yt_code, model="TuniSpeech-AI/whisper-tunisian-dialect", format="json"):
         self.yt_code = yt_code
         self.audio_path = f'../raw_data/{yt_code}/raw.wav'
-        self.transcription_path = f'../raw_data/{yt_code}/output.json'
+        self.transcription_path = f'../raw_data/{yt_code}/output'
         self.transcribe(model, format)
 
 
@@ -58,7 +58,7 @@ class AudioSegmenter:
         self.audio = AudioSegment.from_wav(self.audio_path)
 
     def segment_audio(self,name,start_time, end_time=None):
-        wav_path = f'../corpus/{yt_code}/wavs/{name}.wav'
+        wav_path = f'../corpus/{self.yt_code}/wavs/{name}.wav'
         start_sample = int(start_time * 1000)  
         end_sample = int(end_time * 1000) if end_time is not None else len(self.audio)
         segment = self.audio[start_sample:end_sample]
@@ -93,6 +93,7 @@ if __name__ == "__main__":
     argv = parser.parse_args()
     if not argv.yt_code:
         raise ValueError("YouTube video code is required. Use -y or --yt_code to provide it.")
+    yt_code = argv.yt_code
     YoutubeAudioDownloader(yt_code)
     Transcribe(yt_code,"TuniSpeech-AI/whisper-tunisian-dialect", "json")
     Qwen3ASRTransform(yt_code).transform()
