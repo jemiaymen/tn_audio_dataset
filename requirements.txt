@@ -1,0 +1,9 @@
+# Windows-specific package
+transformers[torch] ; sys_platform == 'win32'
+# Linux-specific package
+transformers[torch] ; sys_platform.startswith('linux')
+# macOS-specific package
+mlx-audio ; sys_platform == 'darwin'
+yt_dlp
+jsonlines
+pydub
