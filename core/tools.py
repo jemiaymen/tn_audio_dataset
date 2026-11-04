@@ -158,6 +158,8 @@ class Qwen3ASRTransform(TransformDataset):
                 start_time = row['start']
                 end_time = row['end']
                 text = row['text']
+                if not text.strip() :
+                    continue
                 name = f"{start_time:.2f}_{end_time:.2f}"
                 self.segmenter.segment_audio(name, start_time, end_time)
                 writer.write({"audio": f'/corpus/{self.code}/wavs/{name}.wav', "text": f"language Arabic<asr_text>{text}"})
@@ -167,17 +169,27 @@ class HFDatasetTransform(TransformDataset):
         os.makedirs('../hf_dataset/train/', exist_ok=True)
         os.makedirs('../hf_dataset/test/', exist_ok=True)
         data = json.load(open(f'../raw_data/{self.code}/output.json', 'r', encoding="utf-8"))
-        with open(f'../hf_dataset/train/metadata.csv',mode="a",newline='', encoding="utf8") as file:
+        with open(f'../hf_dataset/train/metadata.csv',mode="a",newline='', encoding="utf8") as trainfile , open(f'../hf_dataset/test/metadata.csv',mode="a",newline='', encoding="utf8") as testfile :
 
-            writer = csv.writer(file)
+            train_writer = csv.writer(trainfile)
+            test_writer = csv.writer(testfile)
+            i = 0
             for row in data["segments"]:
                 start_time = row['start']
                 end_time = row['end']
                 text = row['text']
+                if not text.strip():
+                    continue
                 unique_id = uuid.uuid4()
                 name = unique_id.hex
-                self.segmenter.segment_audio(name,start_time,end_time,base_path='../hf_dataset/train/')
-                writer.writerow([f'{name}.wav',text])
+                # 10 % test 90 % train
+                if i % 10 == 0:
+                    self.segmenter.segment_audio(name,start_time,end_time,base_path='../hf_dataset/test/')
+                    test_writer.writerow([f'{name}.wav',text])
+                else:
+                    self.segmenter.segment_audio(name,start_time,end_time,base_path='../hf_dataset/train/')
+                    train_writer.writerow([f'{name}.wav',text])
+                i+= 1
 
 
 if __name__ == "__main__":
