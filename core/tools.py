@@ -18,16 +18,17 @@ else:
     from transformers import pipeline
 
 
-class YoutubeAudioDownloader:
-    def __init__(self, yt_code):
-        self.yt_code = yt_code
-        self.yt_url = f'https://www.youtube.com/watch?v={yt_code}'
-        os.makedirs(f'../raw_data/{yt_code}', exist_ok=True)
-        self.download()
+class AudioDownloader:
+    def __init__(self, code):
+        self.code =code
+        self.yt_url = f'https://www.youtube.com/watch?v={code}'
+        self.fb_url = f'https://www.facebook.com/reel/{code}'
+        self.ig_url = f'https://www.instagram.com/reels/{code}/'
+        os.makedirs(f'../raw_data/{code}', exist_ok=True)
 
-    def download(self):
+    def download_yt(self):
         ydl_opts = {
-            'outtmpl': f'../raw_data/{self.yt_code}/raw',
+            'outtmpl': f'../raw_data/{self.code}/raw',
             'format': 'bestaudio/best',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
@@ -40,11 +41,53 @@ class YoutubeAudioDownloader:
         with YoutubeDL(ydl_opts) as ydl:
             ydl.download([self.yt_url])
 
+    def download_fb(self):
+            ydl_opts = {
+                'outtmpl': f'../raw_data/{self.code}/raw',
+                'format': 'bestaudio/best',
+                'postprocessors': [
+                    {
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'wav',
+                    } 
+                ],
+                'postprocessor_args': {
+                    'ExtractAudio': ['-ar', '16000']
+                },
+                'ignoreerrors': False,
+                'logtostderr': False,
+                'quiet': False
+            }
+
+            with YoutubeDL(ydl_opts) as ydl:
+                ydl.download([self.fb_url])
+
+    def download_ig(self):
+        ydl_opts = {
+            'outtmpl': f'../raw_data/{self.code}/raw',
+            'format': 'bestaudio/best',
+            'postprocessors': [
+                {
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'wav',
+                } 
+            ],
+            'postprocessor_args': {
+                'ExtractAudio': ['-ar', '16000']
+            },
+            'ignoreerrors': False,
+            'logtostderr': False,
+            'quiet': False
+        }
+
+        with YoutubeDL(ydl_opts) as ydl:
+            ydl.download([self.ig_url])
+
 class Transcribe:
-    def __init__(self, yt_code, model="TuniSpeech-AI/whisper-tunisian-dialect", format="json"):
-        self.yt_code = yt_code
-        self.audio_path = f'../raw_data/{yt_code}/raw.wav'
-        self.transcription_path = f'../raw_data/{yt_code}/output'
+    def __init__(self, code, model="TuniSpeech-AI/whisper-tunisian-dialect", format="json"):
+        self.code = code
+        self.audio_path = f'../raw_data/{self.code}/raw.wav'
+        self.transcription_path = f'../raw_data/{self.code}/output'
         self.transcribe(model, format)
 
 
@@ -63,7 +106,7 @@ class Transcribe:
                 "automatic-speech-recognition",
                 model="TuniSpeech-AI/whisper-tunisian-dialect"
             )
-        result = pipe(f"../raw_data/{yt_code}/raw.wav" , return_timestamps=True, language="ar")
+        result = pipe(f"../raw_data/{self.code}/raw.wav" , return_timestamps=True, language="ar")
         json_file = {"text" : result["text"],"segments": [] }
         for row in result["chunks"]:
             json_file["segments"].append({
@@ -72,24 +115,26 @@ class Transcribe:
                 "end": row["timestamp"][1],
             })
     
-        with open(f"../raw_data/{yt_code}/output.json", "w",encoding="utf8") as file:
+        with open(f"../raw_data/{self.code}/output.json", "w",encoding="utf8") as file:
             json.dump(json_file, file, ensure_ascii=False, indent=2)
 
         return result        
 
 class AudioSegmenter:
-    def __init__(self, yt_code):
-        self.yt_code = yt_code
-        self.audio_path = f'../raw_data/{yt_code}/raw.wav'
-        self.segments_dir = f'../corpus/{yt_code}/wavs'
+    def __init__(self, code):
+        self.code = code
+        self.audio_path = f'../raw_data/{code}/raw.wav'
+        self.segments_dir = f'../corpus/{code}/wavs'
         os.makedirs(self.segments_dir, exist_ok=True)
         self.audio = AudioSegment.from_wav(self.audio_path)
+        with open(f'../raw_data/{code}/len.txt','w',encoding="utf8") as file:
+            file.write( f'{self.audio.duration_seconds:.2f}\n')
 
     def segment_audio(self,name,start_time, end_time=None,base_path=None):
         if base_path:
             wav_path = base_path + f"{name}.wav"
         else:
-            wav_path = f'../corpus/{self.yt_code}/wavs/{name}.wav'
+            wav_path = f'../corpus/{self.code}/wavs/{name}.wav'
         start_sample = int(start_time * 1000)  
         end_sample = int(end_time * 1000) if end_time is not None else len(self.audio)
         segment = self.audio[start_sample:end_sample]
@@ -97,9 +142,9 @@ class AudioSegmenter:
 
 class TransformDataset(ABC):
     
-    def __init__(self, yt_code:str):
-        self.yt_code = yt_code  
-        self.segmenter = AudioSegmenter(yt_code)
+    def __init__(self, code:str):
+        self.code = code  
+        self.segmenter = AudioSegmenter(code)
     @abstractmethod
     def transform(self):
         pass
@@ -107,22 +152,23 @@ class TransformDataset(ABC):
 class Qwen3ASRTransform(TransformDataset):
 
     def transform(self):
-        data = json.load(open(f'../raw_data/{self.yt_code}/output.json', 'r', encoding="utf-8"))
-        with jsonlines.open(f'../corpus/{self.yt_code}/metadata.jsonl' , mode="w") as writer:
+        data = json.load(open(f'../raw_data/{self.code}/output.json', 'r', encoding="utf-8"))
+        with jsonlines.open(f'../corpus/{self.code}/metadata.jsonl' , mode="w") as writer:
             for row in data["segments"]:
                 start_time = row['start']
                 end_time = row['end']
                 text = row['text']
                 name = f"{start_time:.2f}_{end_time:.2f}"
                 self.segmenter.segment_audio(name, start_time, end_time)
-                writer.write({"audio": f'/corpus/{self.yt_code}/wavs/{name}.wav', "text": f"language Arabic<asr_text>{text}"})
+                writer.write({"audio": f'/corpus/{self.code}/wavs/{name}.wav', "text": f"language Arabic<asr_text>{text}"})
 
 class HFDatasetTransform(TransformDataset):
     def transform(self):
         os.makedirs('../hf_dataset/train/', exist_ok=True)
         os.makedirs('../hf_dataset/test/', exist_ok=True)
-        data = json.load(open(f'../raw_data/{self.yt_code}/output.json', 'r', encoding="utf-8"))
+        data = json.load(open(f'../raw_data/{self.code}/output.json', 'r', encoding="utf-8"))
         with open(f'../hf_dataset/train/metadata.csv',mode="a",newline='', encoding="utf8") as file:
+
             writer = csv.writer(file)
             for row in data["segments"]:
                 start_time = row['start']
@@ -134,18 +180,38 @@ class HFDatasetTransform(TransformDataset):
                 writer.writerow([f'{name}.wav',text])
 
 
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Download YouTube audio, transcribe it, and transform the dataset.")
+    parser = argparse.ArgumentParser(description="Download audio, transcribe it, and transform the dataset.")
     parser.add_argument("-y","--yt_code", type=str, help="The YouTube video code.")
-    parser.add_argument("-f" ,"--hugface", action="store_true" , help ="Activate hugeface dataset transformation")
+    parser.add_argument("-f","--fb_code", type=str, help="The Facebook video code.")
+    parser.add_argument("-i","--ig_code", type=str, help="The Instagram video code.")
+    parser.add_argument("-g" ,"--hugface", action="store_true" , help ="Activate hugeface dataset transformation")
+    parser.add_argument("-q" , "--qwen", action="store_true", help ="Activate Qwen dataset transformation")
+    parser.add_argument("-t" , "--trans", action="store_true", help ="Activate Transcribe")
+    parser.add_argument("-n" , "--no_download_need", action="store_true", help ="-n or --no_download_need for exist wav. ")
     argv = parser.parse_args()
-    if not argv.yt_code:
-        raise ValueError("YouTube video code is required. Use -y or --yt_code to provide it.")
-    yt_code = argv.yt_code
-    YoutubeAudioDownloader(yt_code)
-    Transcribe.transcribe(yt_code)
-    Qwen3ASRTransform(yt_code).transform()
+
+    code = ''
+    if not argv.yt_code and not argv.fb_code and not argv.ig_code:
+        raise ValueError("YouTube, Facebook or Instagram video code is required. Use -y | --yt_code, -f | --fb_code or -i --ig_code .")
+
+    
+    if argv.yt_code:
+        code = argv.yt_code
+        if argv.no_download_need is False:
+            AudioDownloader(code).download_yt()
+    elif argv.fb_code:
+        code = argv.fb_code
+        if argv.no_download_need is False:
+            AudioDownloader(code).download_fb()
+    elif argv.ig_code:
+        code = argv.ig_code
+        if argv.no_download_need is False:
+            AudioDownloader(code).download_ig()
+    if argv.trans:
+        Transcribe(code)
+    if argv.qwen:
+        Qwen3ASRTransform(code).transform()
     if argv.hugface:
-        HFDatasetTransform(yt_code)
+        HFDatasetTransform(code).transform()
         
