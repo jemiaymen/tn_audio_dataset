@@ -5,9 +5,13 @@ import csv
 import uuid
 import argparse
 from abc import ABC, abstractmethod
+import math
+
+import numpy as np
 from yt_dlp import YoutubeDL
 from pydub import AudioSegment
 import jsonlines
+from faster_whisper import WhisperModel
 
 
 current_os = platform.system()
@@ -17,6 +21,9 @@ if current_os == "Darwin":
 else:
     from transformers import pipeline
 
+def get_confidence_percentage(avg_logprob):
+    probability = min(1.0, math.exp(avg_logprob))
+    return round(probability * 100, 2)
 
 class AudioDownloader:
     def __init__(self, code):
@@ -84,7 +91,7 @@ class AudioDownloader:
             ydl.download([self.ig_url])
 
 class Transcribe:
-    def __init__(self, code, model="TuniSpeech-AI/whisper-tunisian-dialect", format="json"):
+    def __init__(self, code, model="../models/whisper-tunisian-dialect-ct2", format="json"):
         self.code = code
         self.audio_path = f'../raw_data/{self.code}/raw.wav'
         self.transcription_path = f'../raw_data/{self.code}/output'
@@ -101,19 +108,33 @@ class Transcribe:
                 language="ar",
                 output_file=self.transcription_path )
             return result
-        
-        pipe = pipeline(
-                "automatic-speech-recognition",
-                model="TuniSpeech-AI/whisper-tunisian-dialect"
-            )
-        result = pipe(f"../raw_data/{self.code}/raw.wav" , return_timestamps=True, language="ar")
-        json_file = {"text" : result["text"],"segments": [] }
-        for row in result["chunks"]:
+
+        wmodel = WhisperModel(model, device="cpu", compute_type="int8")
+
+        result, info = wmodel.transcribe(f"../raw_data/{self.code}/raw.wav", 
+                                        language="ar", 
+                                        vad_filter=True,
+                                        word_timestamps=True,
+                                        log_prob_threshold=-1.0)
+
+        json_file = {"segments": [] }
+        for segment in result:
+
+            if segment.words:
+                word_logprobs = [math.log(max(w.probability, 1e-5)) for w in segment.words]
+                true_segment_avg_logprob = sum(word_logprobs) / len(word_logprobs)
+            else:
+                true_segment_avg_logprob = segment.avg_logprob
+
+            confidence_pct = get_confidence_percentage(true_segment_avg_logprob)
+
             json_file["segments"].append({
-                "text": row["text"],
-                "start": row["timestamp"][0],
-                "end": row["timestamp"][1],
-            })
+                            "text": segment.text,
+                            "start": segment.start,
+                            "end": segment.end,
+                            "logprob" : true_segment_avg_logprob,
+                            "confidence_percentage" : confidence_pct
+                        }) 
     
         with open(f"../raw_data/{self.code}/output.json", "w",encoding="utf8") as file:
             json.dump(json_file, file, ensure_ascii=False, indent=2)

@@ -1,0 +1,1 @@
+ct2-transformers-converter --model TuniSpeech-AI/whisper-tunisian-dialect  --output_dir whisper-tunisian-dialect-ct2  --copy_files tokenizer.json preprocessor_config.json  --quantization int8

@@ -1,9 +1,10 @@
 # Windows-specific package
 transformers[torch] ; sys_platform == 'win32'
-# Linux-specific package
-transformers[torch] ; sys_platform.startswith('linux')
+faster-whisper<1.1.0 ; sys_platform == 'win32'
+
 # macOS-specific package
 mlx-audio ; sys_platform == 'darwin'
+requests
 yt_dlp
 jsonlines
 pydub
