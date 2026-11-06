@@ -1,41 +1,34 @@
 import os
 import json
-import platform
 import csv
 import uuid
 import argparse
 from abc import ABC, abstractmethod
 import math
-
-import numpy as np
+from pathlib import Path
 from yt_dlp import YoutubeDL
 from pydub import AudioSegment
 import jsonlines
 from faster_whisper import WhisperModel
 
 
-current_os = platform.system()
-
-if current_os == "Darwin":
-    from mlx_audio.stt.generate import generate_transcription
-else:
-    from transformers import pipeline
 
 def get_confidence_percentage(avg_logprob):
     probability = min(1.0, math.exp(avg_logprob))
     return round(probability * 100, 2)
 
 class AudioDownloader:
-    def __init__(self, code):
+    def __init__(self, code,default_path='../raw_data'):
         self.code =code
+        self.default_path = default_path
         self.yt_url = f'https://www.youtube.com/watch?v={code}'
         self.fb_url = f'https://www.facebook.com/reel/{code}'
         self.ig_url = f'https://www.instagram.com/reels/{code}/'
-        os.makedirs(f'../raw_data/{code}', exist_ok=True)
+        os.makedirs(f'{default_path}/{code}', exist_ok=True)
 
     def download_yt(self):
         ydl_opts = {
-            'outtmpl': f'../raw_data/{self.code}/raw',
+            'outtmpl': f'{self.default_path}/{self.code}/raw',
             'format': 'bestaudio/best',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
@@ -50,7 +43,7 @@ class AudioDownloader:
 
     def download_fb(self):
             ydl_opts = {
-                'outtmpl': f'../raw_data/{self.code}/raw',
+                'outtmpl': f'{self.default_path}/{self.code}/raw',
                 'format': 'bestaudio/best',
                 'postprocessors': [
                     {
@@ -71,7 +64,7 @@ class AudioDownloader:
 
     def download_ig(self):
         ydl_opts = {
-            'outtmpl': f'../raw_data/{self.code}/raw',
+            'outtmpl': f'{self.default_path}/{self.code}/raw',
             'format': 'bestaudio/best',
             'postprocessors': [
                 {
@@ -91,33 +84,26 @@ class AudioDownloader:
             ydl.download([self.ig_url])
 
 class Transcribe:
-    def __init__(self, code, model="../models/whisper-tunisian-dialect-ct2", format="json"):
+    def __init__(self, code, model="../models/whisper-tunisian-dialect-ct2"):
         self.code = code
         self.audio_path = f'../raw_data/{self.code}/raw.wav'
         self.transcription_path = f'../raw_data/{self.code}/output'
-        self.transcribe(model, format)
+        self.transcribe(model)
 
 
-    def transcribe(self,model,format):
-        if current_os == "Darwin":
-            result = generate_transcription(
-                model=model,
-                audio= self.audio_path,
-                format=format,
-                verbose=True,
-                language="ar",
-                output_file=self.transcription_path )
-            return result
+    def transcribe(self,model):
 
         wmodel = WhisperModel(model, device="cpu", compute_type="int8")
-
         result, info = wmodel.transcribe(f"../raw_data/{self.code}/raw.wav", 
                                         language="ar", 
                                         vad_filter=True,
                                         word_timestamps=True,
                                         log_prob_threshold=-1.0)
-
-        json_file = {"segments": [] }
+        # more then 85%
+        high_confidence = {"total" : 0.0 ,"segments": []  }
+        # between 50 and less 85%
+        low_confidence = {"segments": [] }
+        total_s = 0.0
         for segment in result:
 
             if segment.words:
@@ -128,34 +114,41 @@ class Transcribe:
 
             confidence_pct = get_confidence_percentage(true_segment_avg_logprob)
 
-            json_file["segments"].append({
-                            "text": segment.text,
-                            "start": segment.start,
-                            "end": segment.end,
-                            "logprob" : true_segment_avg_logprob,
-                            "confidence_percentage" : confidence_pct
-                        }) 
-    
-        with open(f"../raw_data/{self.code}/output.json", "w",encoding="utf8") as file:
-            json.dump(json_file, file, ensure_ascii=False, indent=2)
+            if confidence_pct >= 85.0:
+                high_confidence["segments"].append({
+                    "text": segment.text,
+                    "start": segment.start,
+                    "end": segment.end,
+                    "logprob" : true_segment_avg_logprob,
+                    "confidence_percentage" : confidence_pct
+                })
+                total_s += (segment.end - segment.start)
+
+            elif confidence_pct >= 50.0:
+                low_confidence["segments"].append({
+                    "text": segment.text,
+                    "start": segment.start,
+                    "end": segment.end,
+                    "logprob" : true_segment_avg_logprob,
+                    "confidence_percentage" : confidence_pct
+                })
+
+        high_confidence["total"] = total_s
+
+        with open(f"../raw_data/{self.code}/output.json", "w",encoding="utf8") as high , open(f"../raw_data/{self.code}/low.json", "w",encoding="utf8") as low:
+            json.dump(high_confidence, high, ensure_ascii=False, indent=2)
+            json.dump(low_confidence, low, ensure_ascii=False, indent=2)
 
         return result        
 
 class AudioSegmenter:
-    def __init__(self, code):
-        self.code = code
-        self.audio_path = f'../raw_data/{code}/raw.wav'
-        self.segments_dir = f'../corpus/{code}/wavs'
-        os.makedirs(self.segments_dir, exist_ok=True)
-        self.audio = AudioSegment.from_wav(self.audio_path)
-        with open(f'../raw_data/{code}/len.txt','w',encoding="utf8") as file:
-            file.write( f'{self.audio.duration_seconds:.2f}\n')
+    def __init__(self, path_in):
 
-    def segment_audio(self,name,start_time, end_time=None,base_path=None):
-        if base_path:
-            wav_path = base_path + f"{name}.wav"
-        else:
-            wav_path = f'../corpus/{self.code}/wavs/{name}.wav'
+        self.audio_path = f'{path_in}/raw.wav'
+        self.audio = AudioSegment.from_wav(self.audio_path)
+
+    def segment_audio(self,path_out,start_time, end_time=None):
+        wav_path = f'{path_out}.wav'
         start_sample = int(start_time * 1000)  
         end_sample = int(end_time * 1000) if end_time is not None else len(self.audio)
         segment = self.audio[start_sample:end_sample]
@@ -163,54 +156,69 @@ class AudioSegmenter:
 
 class TransformDataset(ABC):
     
-    def __init__(self, code:str):
-        self.code = code  
-        self.segmenter = AudioSegmenter(code)
+    def __init__(self, base_dir:str):
+        p = Path(base_dir)
+        self.base_dir = base_dir
+        self.folders = [x for x in p.iterdir() if x.is_dir()]  
+        
     @abstractmethod
     def transform(self):
         pass
 
 class Qwen3ASRTransform(TransformDataset):
 
-    def transform(self):
-        data = json.load(open(f'../raw_data/{self.code}/output.json', 'r', encoding="utf-8"))
-        with jsonlines.open(f'../corpus/{self.code}/metadata.jsonl' , mode="w") as writer:
-            for row in data["segments"]:
-                start_time = row['start']
-                end_time = row['end']
-                text = row['text']
-                if not text.strip() :
-                    continue
-                name = f"{start_time:.2f}_{end_time:.2f}"
-                self.segmenter.segment_audio(name, start_time, end_time)
-                writer.write({"audio": f'/corpus/{self.code}/wavs/{name}.wav', "text": f"language Arabic<asr_text>{text}"})
+    def transform(self,i=1):
+        qwen_path = '../qwen3_dataset'
+        os.makedirs(qwen_path,exist_ok=True)
+        for folder in self.folders:
+
+            data = json.load(open(f'{folder}/output.json', 'r', encoding="utf-8"))
+            segmenter = AudioSegmenter(str(folder))
+            metadata = []
+            with jsonlines.open(f'{qwen_path}/metadata.jsonl' , mode="a") as writer:
+                for row in data["segments"]:
+                    start_time = row['start']
+                    end_time = row['end']
+                    text = row['text']
+                    if not text.strip() :
+                        continue
+                    name = f"{i}"
+                    segmenter.segment_audio(f'{qwen_path}/{name}', start_time, end_time)
+                    metadata.append({"audio": f'{name}.wav', "text": f"language Arabic<asr_text>{text}"})
+                    i+= 1
+                writer.write_all(metadata)
 
 class HFDatasetTransform(TransformDataset):
-    def transform(self):
-        os.makedirs('../hf_dataset/train/', exist_ok=True)
-        os.makedirs('../hf_dataset/test/', exist_ok=True)
-        data = json.load(open(f'../raw_data/{self.code}/output.json', 'r', encoding="utf-8"))
-        with open(f'../hf_dataset/train/metadata.csv',mode="a",newline='', encoding="utf8") as trainfile , open(f'../hf_dataset/test/metadata.csv',mode="a",newline='', encoding="utf8") as testfile :
+    def transform(self,i=1):
+        train_path = '../hf_dataset/train'
+        test_path = '../hf_dataset/test'
+        os.makedirs(train_path, exist_ok=True)
+        os.makedirs(test_path, exist_ok=True)
+        for folder in self.folders:
+            data = json.load(open(f'{folder}/output.json', 'r', encoding="utf-8"))
+            segmenter = AudioSegmenter(str(folder))
+            with open(f'{train_path}/metadata.csv',mode="a",newline='', encoding="utf8") as trainfile , open(f'{test_path}/metadata.csv',mode="a",newline='', encoding="utf8") as testfile :
 
-            train_writer = csv.writer(trainfile)
-            test_writer = csv.writer(testfile)
-            i = 0
-            for row in data["segments"]:
-                start_time = row['start']
-                end_time = row['end']
-                text = row['text']
-                if not text.strip():
-                    continue
-                unique_id = uuid.uuid4()
-                name = unique_id.hex
-                # 10 % test 90 % train
-                if i % 10 == 0:
-                    self.segmenter.segment_audio(name,start_time,end_time,base_path='../hf_dataset/test/')
-                    test_writer.writerow([f'{name}.wav',text])
-                else:
-                    self.segmenter.segment_audio(name,start_time,end_time,base_path='../hf_dataset/train/')
-                    train_writer.writerow([f'{name}.wav',text])
-                i+= 1
+                train_writer = csv.writer(trainfile)
+                test_writer = csv.writer(testfile)
+                train_data = []
+                test_data = []
+                for row in data["segments"]:
+                    start_time = row['start']
+                    end_time = row['end']
+                    text = row['text']
+                    if not text.strip():
+                        continue
+                    # 10 % test 90 % train
+                    if i % 10 == 0:
+                        segmenter.segment_audio(f'{test_path}/{i}',start_time,end_time)
+                        test_data.append([f'{i}.wav' ,  text])
+                    else:
+                        segmenter.segment_audio(f'{train_path}/{i}',start_time,end_time)
+                        train_data.append([f'{i}.wav' ,  text])
+                    i+= 1
+                train_writer.writerows(train_data)
+                test_writer.writerows(test_data)
 
 
 if __name__ == "__main__":
@@ -222,10 +230,13 @@ if __name__ == "__main__":
     parser.add_argument("-q" , "--qwen", action="store_true", help ="Activate Qwen dataset transformation")
     parser.add_argument("-t" , "--trans", action="store_true", help ="Activate Transcribe")
     parser.add_argument("-n" , "--no_download_need", action="store_true", help ="-n or --no_download_need for exist wav. ")
+    parser.add_argument("-c","--counter", type=int,default=1, help="Dataset transform counter.")
+    parser.add_argument("-d","--default_path", type=str, default="../raw_data", help="Default path to download audio.")
     argv = parser.parse_args()
 
     code = ''
-    if not argv.yt_code and not argv.fb_code and not argv.ig_code:
+    default_path = argv.default_path
+    if not argv.yt_code and not argv.fb_code and not argv.ig_code and argv.no_download_need is False:
         raise ValueError("YouTube, Facebook or Instagram video code is required. Use -y | --yt_code, -f | --fb_code or -i --ig_code .")
 
     
@@ -244,7 +255,7 @@ if __name__ == "__main__":
     if argv.trans:
         Transcribe(code)
     if argv.qwen:
-        Qwen3ASRTransform(code).transform()
+        Qwen3ASRTransform(default_path).transform(argv.counter)
     if argv.hugface:
-        HFDatasetTransform(code).transform()
+        HFDatasetTransform(default_path).transform(argv.counter)
         
